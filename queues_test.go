@@ -75,7 +75,7 @@ func testQueuer(t *testing.T, queue queueFunc) {
 		}
 
 		if v.(int) != i {
-			t.Errorf("%d expected %d", v, i)
+			t.Errorf("expected v<%d> = %d", v, i)
 		}
 
 		_, closed, err = nonNegativeIntsDeq.Dequeue()
@@ -179,7 +179,7 @@ func testMerge(t *testing.T, queue queueFunc) {
 	}
 
 	if sum != 332833500 {
-		t.Errorf("%d expected 332833500", sum)
+		t.Errorf("expected sum<%d> = 332833500", sum)
 	}
 }
 
@@ -256,7 +256,7 @@ func benchmarkQueuer(b *testing.B, queue queueFunc) {
 		}
 
 		if v.(int) != i {
-			b.Errorf("%d expected %d", v, i)
+			b.Errorf("expected v<%d> = %d", v, i)
 		}
 	}
 }
