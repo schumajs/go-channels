@@ -14,13 +14,13 @@ import (
 	"github.com/boltdb/bolt"
 )
 
-type queueFunc func() (Queue, error)
+type queueFunc func() (Queuer, error)
 
 var queues = map[string]queueFunc{
-	"Queue": queueFunc(func() (Queue, error) {
-		return NewQueue()
+	"ListQueuer": queueFunc(func() (Queuer, error) {
+		return NewListQueuer()
 	}),
-	"BoltDbQueue": queueFunc(func() (Queue, error) {
+	"BoltDbQueuer": queueFunc(func() (Queuer, error) {
 		tempFile, err := ioutil.TempFile("", "")
 		if err != nil {
 			return nil, err
@@ -38,11 +38,11 @@ var queues = map[string]queueFunc{
 			return nil, err
 		}
 
-		return NewBoltDbQueue(db, []interface{}{int(0)})
+		return NewBoltDbQueuer(db, []interface{}{int(0)})
 	}),
 }
 
-func testQueue(t *testing.T, queue queueFunc) {
+func testQueuer(t *testing.T, queue queueFunc) {
 	nonNegativeInts := func(count int) Dequeuer {
 		outQ, err := queue()
 		if err != nil {
@@ -88,10 +88,10 @@ func testQueue(t *testing.T, queue queueFunc) {
 	}
 }
 
-func TestQueue(t *testing.T) {
+func TestQueuer(t *testing.T) {
 	for name, queue := range queues {
 		t.Run(name, func(t *testing.T) {
-			testQueue(t, queue)
+			testQueuer(t, queue)
 		})
 	}
 }
@@ -191,19 +191,19 @@ func TestMerge(t *testing.T) {
 	}
 }
 
-type chanQueue struct {
+type chanQueuer struct {
 	elements chan interface{}
 }
 
-func newChanQueue() (Queue, error) {
-	q := &chanQueue{}
+func newChanQueuer() (Queuer, error) {
+	q := &chanQueuer{}
 
 	q.elements = make(chan interface{})
 
 	return q, nil
 }
 
-func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *chanQueuer) Dequeue(peek ...bool) (interface{}, bool, error) {
 	// peek not supported
 
 	v, open := <-q.elements
@@ -211,19 +211,19 @@ func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return v, !open, nil
 }
 
-func (q *chanQueue) Enqueue(v interface{}) error {
+func (q *chanQueuer) Enqueue(v interface{}) error {
 	q.elements <- v
 
 	return nil
 }
 
-func (q *chanQueue) Close() error {
+func (q *chanQueuer) Close() error {
 	close(q.elements)
 
 	return nil
 }
 
-func benchmarkQueue(b *testing.B, queue queueFunc) {
+func benchmarkQueuer(b *testing.B, queue queueFunc) {
 	nonNegativeInts := func(count int) Dequeuer {
 		outQ, err := queue()
 		if err != nil {
@@ -261,16 +261,16 @@ func benchmarkQueue(b *testing.B, queue queueFunc) {
 	}
 }
 
-func BenchmarkQueue(b *testing.B) {
-	queues["ChanQueue"] = queueFunc(func() (Queue, error) {
-		return newChanQueue()
+func BenchmarkQueuer(b *testing.B) {
+	queues["ChanQueuer"] = queueFunc(func() (Queuer, error) {
+		return newChanQueuer()
 	})
-	defer delete(queues, "chanQueue")
+	defer delete(queues, "chanQueuer")
 
 	for name, queue := range queues {
 		b.Run(name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchmarkQueue(b, queue)
+				benchmarkQueuer(b, queue)
 			}
 		})
 	}

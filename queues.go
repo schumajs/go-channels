@@ -28,20 +28,20 @@ type Enqueuer interface {
 	Close() error
 }
 
-type Queue interface {
+type Queuer interface {
 	Dequeuer
 	Enqueuer
 }
 
-type queue struct {
+type listQueuer struct {
 	elements *list.List
 	lock     *sync.Mutex
 	cond     *sync.Cond
 	closed   bool
 }
 
-func NewQueue() (Queue, error) {
-	q := &queue{}
+func NewListQueuer() (Queuer, error) {
+	q := &listQueuer{}
 
 	q.elements = list.New()
 
@@ -52,11 +52,11 @@ func NewQueue() (Queue, error) {
 	return q, nil
 }
 
-func (q *queue) length() int {
+func (q *listQueuer) length() int {
 	return q.elements.Len()
 }
 
-func (q *queue) dequeue(peek bool) interface{} {
+func (q *listQueuer) dequeue(peek bool) interface{} {
 	listElement := q.elements.Front()
 
 	element := listElement.Value
@@ -68,11 +68,11 @@ func (q *queue) dequeue(peek bool) interface{} {
 	return element
 }
 
-func (q *queue) enqueue(v interface{}) {
+func (q *listQueuer) enqueue(v interface{}) {
 	q.elements.PushBack(v)
 }
 
-func (q *queue) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *listQueuer) Dequeue(peek ...bool) (interface{}, bool, error) {
 	if len(peek) == 0 {
 		peek = append(peek, false)
 	}
@@ -94,7 +94,7 @@ func (q *queue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return nil, false, nil
 }
 
-func (q *queue) Enqueue(v interface{}) error {
+func (q *listQueuer) Enqueue(v interface{}) error {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -105,7 +105,7 @@ func (q *queue) Enqueue(v interface{}) error {
 	return nil
 }
 
-func (q *queue) Close() error {
+func (q *listQueuer) Close() error {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -116,7 +116,7 @@ func (q *queue) Close() error {
 	return nil
 }
 
-type boltDbQueue struct {
+type boltDbQueuer struct {
 	db           *bolt.DB
 	elementTypes map[string]reflect.Type
 	lock         *sync.Mutex
@@ -124,13 +124,13 @@ type boltDbQueue struct {
 	closed       bool
 }
 
-func NewBoltDbQueue(db *bolt.DB, elementTypes []interface{}) (Queue, error) {
-	q := &boltDbQueue{}
+func NewBoltDbQueuer(db *bolt.DB, elementTypes []interface{}) (Queuer, error) {
+	q := &boltDbQueuer{}
 
 	q.db = db
 
 	err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("boltDbQueue"))
+		_, err := tx.CreateBucketIfNotExists([]byte("boltDbQueuer"))
 		if err != nil {
 			return err
 		}
@@ -154,11 +154,11 @@ func NewBoltDbQueue(db *bolt.DB, elementTypes []interface{}) (Queue, error) {
 	return q, nil
 }
 
-func (q *boltDbQueue) length() (int, error) {
+func (q *boltDbQueuer) length() (int, error) {
 	var length int
 
 	err := q.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("boltDbQueue"))
+		bucket := tx.Bucket([]byte("boltDbQueuer"))
 
 		stats := bucket.Stats()
 
@@ -173,11 +173,11 @@ func (q *boltDbQueue) length() (int, error) {
 	return length, nil
 }
 
-func (q *boltDbQueue) dequeue(peek bool) (interface{}, error) {
+func (q *boltDbQueuer) dequeue(peek bool) (interface{}, error) {
 	var v interface{}
 
 	err := q.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("boltDbQueue"))
+		bucket := tx.Bucket([]byte("boltDbQueuer"))
 
 		cursor := bucket.Cursor()
 
@@ -228,9 +228,9 @@ func (q *boltDbQueue) dequeue(peek bool) (interface{}, error) {
 	return v, nil
 }
 
-func (q *boltDbQueue) enqueue(v interface{}) error {
+func (q *boltDbQueuer) enqueue(v interface{}) error {
 	err := q.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("boltDbQueue"))
+		bucket := tx.Bucket([]byte("boltDbQueuer"))
 
 		nextSeq, _ := bucket.NextSequence()
 
@@ -268,7 +268,7 @@ func (q *boltDbQueue) enqueue(v interface{}) error {
 	return nil
 }
 
-func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *boltDbQueuer) Dequeue(peek ...bool) (interface{}, bool, error) {
 	if len(peek) == 0 {
 		peek = append(peek, false)
 	}
@@ -305,7 +305,7 @@ func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return nil, false, nil
 }
 
-func (q *boltDbQueue) Enqueue(v interface{}) error {
+func (q *boltDbQueuer) Enqueue(v interface{}) error {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -319,7 +319,7 @@ func (q *boltDbQueue) Enqueue(v interface{}) error {
 	return nil
 }
 
-func (q *boltDbQueue) Close() error {
+func (q *boltDbQueuer) Close() error {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -332,7 +332,7 @@ func (q *boltDbQueue) Close() error {
 
 type multiplexedDequeuer struct {
 	inDeqs []Dequeuer
-	outQ   Queue
+	outQ   Queuer
 	errC   chan error
 }
 
@@ -341,7 +341,7 @@ func NewMultiplexedDequeuer(inDeqs ...Dequeuer) (Dequeuer, error) {
 
 	mr.inDeqs = inDeqs
 
-	outQ, err := NewQueue()
+	outQ, err := NewListQueuer()
 	if err != nil {
 		return nil, err
 	}
