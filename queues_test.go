@@ -9,18 +9,19 @@ package queues
 
 import (
 	"io/ioutil"
+	"sync"
 	"testing"
 
 	"github.com/boltdb/bolt"
 )
 
-type queueFunc func() (Queuer, error)
+type newQueueFunc func() (Queue, error)
 
-var queues = map[string]queueFunc{
-	"ListQueuer": queueFunc(func() (Queuer, error) {
-		return NewListQueuer()
+var testInputs = map[string]newQueueFunc{
+	"ListQueue": newQueueFunc(func() (Queue, error) {
+		return NewListQueue()
 	}),
-	"BoltDbQueuer": queueFunc(func() (Queuer, error) {
+	"BoltDbQueue": newQueueFunc(func() (Queue, error) {
 		tempFile, err := ioutil.TempFile("", "")
 		if err != nil {
 			return nil, err
@@ -38,35 +39,63 @@ var queues = map[string]queueFunc{
 			return nil, err
 		}
 
-		return NewBoltDbQueuer(db, []interface{}{int(0)})
+		return NewBoltDbQueue(db, []interface{}{int(0)})
 	}),
 }
 
-func testQueuer(t *testing.T, queue queueFunc) {
-	nonNegativeInts := func(count int) Dequeuer {
-		outQ, err := queue()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		go func() {
-			defer outQ.Close()
-
-			for i := 0; i < count; i++ {
-				err = outQ.Enqueue(i)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-		}()
-
-		return outQ
+func nonNegativeInts(t *testing.T, newQueue newQueueFunc, count int) Queue {
+	outQ, err := newQueue()
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	nonNegativeIntsDeq := nonNegativeInts(1000)
+	go func() {
+		defer outQ.Close()
+
+		for i := 0; i < count; i++ {
+			err = outQ.Enqueue(i)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	return outQ
+}
+
+func square(t *testing.T, newQueue newQueueFunc, inQ Queue) Queue {
+	outQ, err := newQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		defer outQ.Close()
+
+		for {
+			v, closed, err := inQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+
+			outQ.Enqueue(v.(int) * v.(int))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	return outQ
+}
+
+func testQueue(t *testing.T, newQueue newQueueFunc) {
+	nonNegativeIntsQ := nonNegativeInts(t, newQueue, 1000)
 
 	for i := 0; ; i++ {
-		v, closed, err := nonNegativeIntsDeq.Dequeue(true)
+		v, closed, err := nonNegativeIntsQ.Dequeue(true)
 		switch {
 		case closed:
 			return
@@ -75,91 +104,55 @@ func testQueuer(t *testing.T, queue queueFunc) {
 		}
 
 		if v.(int) != i {
-			t.Errorf("expected v<%d> = %d", v, i)
+			t.Fatalf("expected v<%d> = %d", v, i)
 		}
 
-		_, closed, err = nonNegativeIntsDeq.Dequeue()
+		_, closed, err = nonNegativeIntsQ.Dequeue()
 		switch {
 		case closed:
-			t.Errorf("expected queue to be open")
+			t.Fatalf("expected queue to be open")
 		case err != nil:
 			t.Fatal(err)
 		}
 	}
 }
 
-func TestQueuer(t *testing.T) {
-	for name, queue := range queues {
+func TestQueue(t *testing.T) {
+	for name, newQueue := range testInputs {
 		t.Run(name, func(t *testing.T) {
-			testQueuer(t, queue)
+			testQueue(t, newQueue)
 		})
 	}
 }
 
-func testMerge(t *testing.T, queue queueFunc) {
-	nonNegativeInts := func(count int) Dequeuer {
-		outQ, err := queue()
-		if err != nil {
-			t.Fatal(err)
-		}
+func testJoin(t *testing.T, newQueue newQueueFunc) {
+	nonNegativeIntsQ := nonNegativeInts(t, newQueue, 1000)
 
-		go func() {
-			defer outQ.Close()
+	squaresQ1 := square(t, newQueue, nonNegativeIntsQ)
 
-			for i := 0; i < count; i++ {
-				err = outQ.Enqueue(i)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-		}()
+	squaresQ2 := square(t, newQueue, nonNegativeIntsQ)
 
-		return outQ
-	}
-
-	square := func(inDeq Dequeuer) Dequeuer {
-		outQ, err := queue()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		go func() {
-			defer outQ.Close()
-
-			for {
-				v, closed, err := inDeq.Dequeue()
-				switch {
-				case closed:
-					return
-				case err != nil:
-					t.Fatal(err)
-				}
-
-				outQ.Enqueue(v.(int) * v.(int))
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-		}()
-
-		return outQ
-	}
-
-	nonNegativeIntsDeq := nonNegativeInts(1000)
-
-	squaresDeq1 := square(nonNegativeIntsDeq)
-
-	squaresDeq2 := square(nonNegativeIntsDeq)
-
-	squaresDeq, err := NewMultiplexedDequeuer(squaresDeq1, squaresDeq2)
+	squaresQ, errQ, err := Join(squaresQ1, squaresQ2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
 	sum := 0
 
 	for i := 0; ; i++ {
-		v, closed, err := squaresDeq.Dequeue(true)
+		v, closed, err := squaresQ.Dequeue()
 		if closed {
 			break
 		}
@@ -168,42 +161,126 @@ func testMerge(t *testing.T, queue queueFunc) {
 		}
 
 		sum = sum + v.(int)
-
-		_, closed, err = squaresDeq.Dequeue()
-		switch {
-		case closed:
-			t.Errorf("expected queue to be open")
-		case err != nil:
-			t.Fatal(err)
-		}
 	}
 
 	if sum != 332833500 {
-		t.Errorf("expected sum<%d> = 332833500", sum)
+		t.Fatalf("expected sum<%d> = 332833500", sum)
 	}
 }
 
-func TestMerge(t *testing.T) {
-	for name, queue := range queues {
+func TestJoin(t *testing.T) {
+	for name, newQueue := range testInputs {
 		t.Run(name, func(t *testing.T) {
-			testMerge(t, queue)
+			testJoin(t, newQueue)
 		})
 	}
 }
 
-type chanQueuer struct {
+func testSplit(t *testing.T, newQueue newQueueFunc) {
+	nonNegativeIntsQ := nonNegativeInts(t, newQueue, 1000)
+
+	oddAndEvenQs, errQ, err := Split(
+		nonNegativeIntsQ,
+		func(outQ Queue, v interface{}) error {
+			if v.(int)%2 != 0 {
+				err := outQ.Enqueue(v)
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		func(outQ Queue, v interface{}) error {
+			if v.(int)%2 == 0 {
+				err := outQ.Enqueue(v)
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		for i := 1; ; i += 2 {
+			v, closed, err := oddAndEvenQs[0].Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+
+			if v.(int) != i {
+				t.Fatalf("expected v<%d> = %d", v, i)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; ; i += 2 {
+			v, closed, err := oddAndEvenQs[1].Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+
+			if v.(int) != i {
+				t.Fatalf("expected v<%d> = %d", v, i)
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestSplit(t *testing.T) {
+	for name, newQueue := range testInputs {
+		t.Run(name, func(t *testing.T) {
+			testSplit(t, newQueue)
+		})
+	}
+}
+
+type chanQueue struct {
 	elements chan interface{}
 }
 
-func newChanQueuer() (Queuer, error) {
-	q := &chanQueuer{}
+func newChanQueue() (Queue, error) {
+	q := &chanQueue{}
 
 	q.elements = make(chan interface{})
 
 	return q, nil
 }
 
-func (q *chanQueuer) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	// peek not supported
 
 	v, open := <-q.elements
@@ -211,20 +288,20 @@ func (q *chanQueuer) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return v, !open, nil
 }
 
-func (q *chanQueuer) Enqueue(v interface{}) error {
+func (q *chanQueue) Enqueue(v interface{}) error {
 	q.elements <- v
 
 	return nil
 }
 
-func (q *chanQueuer) Close() error {
+func (q *chanQueue) Close() error {
 	close(q.elements)
 
 	return nil
 }
 
-func benchmarkQueuer(b *testing.B, queue queueFunc) {
-	nonNegativeInts := func(count int) Dequeuer {
+func benchmarkQueue(b *testing.B, queue newQueueFunc) {
+	nonNegativeInts := func(count int) Queue {
 		outQ, err := queue()
 		if err != nil {
 			b.Fatal(err)
@@ -244,10 +321,10 @@ func benchmarkQueuer(b *testing.B, queue queueFunc) {
 		return outQ
 	}
 
-	nonNegativeIntsDeq := nonNegativeInts(100000)
+	nonNegativeIntsQ := nonNegativeInts(100000)
 
 	for i := 0; ; i++ {
-		v, closed, err := nonNegativeIntsDeq.Dequeue()
+		v, closed, err := nonNegativeIntsQ.Dequeue()
 		switch {
 		case closed:
 			return
@@ -256,21 +333,21 @@ func benchmarkQueuer(b *testing.B, queue queueFunc) {
 		}
 
 		if v.(int) != i {
-			b.Errorf("expected v<%d> = %d", v, i)
+			b.Fatalf("expected v<%d> = %d", v, i)
 		}
 	}
 }
 
-func BenchmarkQueuer(b *testing.B) {
-	queues["ChanQueuer"] = queueFunc(func() (Queuer, error) {
-		return newChanQueuer()
+func BenchmarkQueue(b *testing.B) {
+	testInputs["ChanQueue"] = newQueueFunc(func() (Queue, error) {
+		return newChanQueue()
 	})
-	defer delete(queues, "chanQueuer")
+	defer delete(testInputs, "chanQueue")
 
-	for name, queue := range queues {
+	for name, newQueue := range testInputs {
 		b.Run(name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchmarkQueuer(b, queue)
+				benchmarkQueue(b, newQueue)
 			}
 		})
 	}
