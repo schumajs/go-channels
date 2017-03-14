@@ -322,53 +322,84 @@ func (q *boltDbQueue) Close() error {
 	return nil
 }
 
-func Join(inQs ...Queue) (Queue, Queue, error) {
+type joinedQueue struct {
+	inQs []Queue
+	outQ Queue
+	errC chan error
+}
+
+func newJoinedQueue(inQs ...Queue) (Queue, error) {
+	q := &joinedQueue{}
+
+	q.inQs = inQs
+
 	outQ, err := NewListQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	errQ, err := NewListQueue()
-	if err != nil {
-		return nil, nil, err
-	}
+	q.outQ = outQ
+
+	q.errC = make(chan error)
 
 	var wg sync.WaitGroup
 
-	output := func(inQ Queue) {
+	output := func(reader Queue) {
 		defer wg.Done()
 
 		for {
-			v, closed, err := inQ.Dequeue()
+			v, closed, err := reader.Dequeue()
 			switch {
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(err)
+				q.errC <- err
 			}
 
-			outQ.Enqueue(v)
+			err = outQ.Enqueue(v)
+			if err != nil {
+				q.errC <- err
+			}
 		}
 	}
 
-	wg.Add(len(inQs))
+	wg.Add(len(q.inQs))
 
-	for _, inQ := range inQs {
+	for _, inQ := range q.inQs {
 		go output(inQ)
 	}
 
 	go func() {
 		wg.Wait()
 
-		err := outQ.Close()
+		err := q.outQ.Close()
 		if err != nil {
-			errQ.Enqueue(err)
+			q.errC <- err
 		}
-
-		errQ.Close()
 	}()
 
-	return outQ, errQ, nil
+	return q, nil
+}
+
+func (q *joinedQueue) Enqueue(v interface{}) error {
+	return q.outQ.Enqueue(v)
+}
+
+func (q *joinedQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+	select {
+	case err := <-q.errC:
+		return nil, false, err
+	default:
+		return q.outQ.Dequeue(peek...)
+	}
+}
+
+func (q *joinedQueue) Close() error {
+	return q.outQ.Close()
+}
+
+func Join(inQs ...Queue) (Queue, error) {
+	return newJoinedQueue(inQs...)
 }
 
 func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Queue, error) {
@@ -419,4 +450,63 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 	}()
 
 	return outQs, errQ, nil
+}
+
+func Pipe(inQ Queue, fs ...func(v interface{}) (interface{}, bool, error)) (Queue, Queue, error) {
+	var outQ Queue
+
+	errQs := make([]Queue, len(fs))
+
+	for i, f := range fs {
+		var err error
+
+		outQ, err = NewListQueue()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		errQs[i], err = NewListQueue()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		go func(inQ, outQ, errQ Queue, f func(v interface{}) (interface{}, bool, error)) {
+			defer outQ.Close()
+
+			defer errQ.Close()
+
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					return
+				case err != nil:
+					errQ.Enqueue(err)
+				}
+
+				var enqueue bool
+
+				v, enqueue, err = f(v)
+				if err != nil {
+					errQ.Enqueue(err)
+				}
+
+				if enqueue {
+					err = outQ.Enqueue(v)
+					if err != nil {
+						errQ.Enqueue(err)
+					}
+				}
+			}
+		}(inQ, outQ, errQs[i], f)
+
+		inQ = outQ
+	}
+
+	errQ, err := Join(errQs...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return outQ, errQ, nil
 }

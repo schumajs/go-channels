@@ -43,59 +43,72 @@ var testInputs = map[string]newQueueFunc{
 	}),
 }
 
-func nonNegativeInts(t *testing.T, newQueue newQueueFunc, count int) Queue {
+func nonNegInts(newQueue newQueueFunc, count int) (Queue, Queue, error) {
 	outQ, err := newQueue()
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, err
+	}
+
+	errQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	go func() {
 		defer outQ.Close()
+
+		defer errQ.Close()
 
 		for i := 0; i < count; i++ {
 			err = outQ.Enqueue(i)
 			if err != nil {
-				t.Fatal(err)
+				errQ.Enqueue(err)
 			}
 		}
 	}()
 
-	return outQ
+	return outQ, errQ, nil
 }
 
-func square(t *testing.T, newQueue newQueueFunc, inQ Queue) Queue {
-	outQ, err := newQueue()
+func square(v interface{}) (interface{}, bool, error) {
+	// fmt.Printf("%v\n", v)
+	return v.(int) * v.(int), true, nil
+}
+
+type sumer struct {
+	Count int
+	count int
+	sum   int
+}
+
+func (s *sumer) Sum(v interface{}) (interface{}, bool, error) {
+	s.count++
+
+	s.sum += v.(int)
+
+	return s.sum, (s.count == s.Count), nil
+}
+
+func testQueue(t *testing.T, newQueue newQueueFunc) {
+	nonNegIntsQ, errQ, err := nonNegInts(newQueue, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	go func() {
-		defer outQ.Close()
-
 		for {
-			v, closed, err := inQ.Dequeue()
+			_, closed, err := errQ.Dequeue()
 			switch {
 			case closed:
 				return
 			case err != nil:
 				t.Fatal(err)
 			}
-
-			outQ.Enqueue(v.(int) * v.(int))
-			if err != nil {
-				t.Fatal(err)
-			}
 		}
 	}()
 
-	return outQ
-}
-
-func testQueue(t *testing.T, newQueue newQueueFunc) {
-	nonNegativeIntsQ := nonNegativeInts(t, newQueue, 1000)
-
 	for i := 0; ; i++ {
-		v, closed, err := nonNegativeIntsQ.Dequeue(true)
+		v, closed, err := nonNegIntsQ.Dequeue(true)
 		switch {
 		case closed:
 			return
@@ -107,7 +120,7 @@ func testQueue(t *testing.T, newQueue newQueueFunc) {
 			t.Fatalf("expected v<%d> = %d", v, i)
 		}
 
-		_, closed, err = nonNegativeIntsQ.Dequeue()
+		_, closed, err = nonNegIntsQ.Dequeue()
 		switch {
 		case closed:
 			t.Fatalf("expected queue to be open")
@@ -126,20 +139,51 @@ func TestQueue(t *testing.T) {
 }
 
 func testJoin(t *testing.T, newQueue newQueueFunc) {
-	nonNegativeIntsQ := nonNegativeInts(t, newQueue, 1000)
+	square := func(inQ Queue) Queue {
+		outQ, err := newQueue()
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	squaresQ1 := square(t, newQueue, nonNegativeIntsQ)
+		go func() {
+			defer outQ.Close()
 
-	squaresQ2 := square(t, newQueue, nonNegativeIntsQ)
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					return
+				case err != nil:
+					t.Fatal(err)
+				}
 
-	squaresQ, errQ, err := Join(squaresQ1, squaresQ2)
+				err = outQ.Enqueue(v.(int) * v.(int))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		}()
+
+		return outQ
+	}
+
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	squaresQ1 := square(nonNegIntsQ)
+
+	squaresQ2 := square(nonNegIntsQ)
+
+	squaresQ, err := Join(squaresQ1, squaresQ2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			_, closed, err := nonNegIntsErrQ.Dequeue()
 			switch {
 			case closed:
 				return
@@ -169,18 +213,17 @@ func testJoin(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestJoin(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testJoin(t, newQueue)
-		})
-	}
+	testJoin(t, testInputs["ListQueue"])
 }
 
 func testSplit(t *testing.T, newQueue newQueueFunc) {
-	nonNegativeIntsQ := nonNegativeInts(t, newQueue, 1000)
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	oddAndEvenQs, errQ, err := Split(
-		nonNegativeIntsQ,
+	oddAndEvenQs, oddAndEvensErrQ, err := Split(
+		nonNegIntsQ,
 		func(outQ Queue, v interface{}) error {
 			if v.(int)%2 != 0 {
 				err := outQ.Enqueue(v)
@@ -201,6 +244,11 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 
 			return nil
 		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errQ, err := Join(nonNegIntsErrQ, oddAndEvensErrQ)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,11 +309,55 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestSplit(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testSplit(t, newQueue)
-		})
+	testSplit(t, testInputs["ListQueue"])
+}
+
+func testPipe(t *testing.T, newQueue newQueueFunc) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	sumer := &sumer{
+		Count: 1000,
+	}
+
+	sumOfSquaresQ, sumOfSquaresErrQ, err := Pipe(nonNegIntsQ, square, sumer.Sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errQ, err := Join(nonNegIntsErrQ, sumOfSquaresErrQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	v, _, err := sumOfSquaresQ.Dequeue()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum := v.(int)
+
+	if sum != 332833500 {
+		t.Fatalf("expected sum<%d> = 332833500", sum)
+	}
+}
+
+func TestPipe(t *testing.T) {
+	testPipe(t, testInputs["ListQueue"])
 }
 
 type chanQueue struct {
@@ -300,31 +392,26 @@ func (q *chanQueue) Close() error {
 	return nil
 }
 
-func benchmarkQueue(b *testing.B, queue newQueueFunc) {
-	nonNegativeInts := func(count int) Queue {
-		outQ, err := queue()
-		if err != nil {
-			b.Fatal(err)
-		}
-
-		go func() {
-			defer outQ.Close()
-
-			for i := 0; i < count; i++ {
-				err = outQ.Enqueue(i)
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-		}()
-
-		return outQ
+func benchmarkQueue(b *testing.B, newQueue newQueueFunc) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 100000)
+	if err != nil {
+		b.Fatal(err)
 	}
 
-	nonNegativeIntsQ := nonNegativeInts(100000)
+	go func() {
+		for {
+			_, closed, err := nonNegIntsErrQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				b.Fatal(err)
+			}
+		}
+	}()
 
 	for i := 0; ; i++ {
-		v, closed, err := nonNegativeIntsQ.Dequeue()
+		v, closed, err := nonNegIntsQ.Dequeue()
 		switch {
 		case closed:
 			return
