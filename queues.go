@@ -588,16 +588,16 @@ func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queu
 	return outQ, errQ, nil
 }
 
-func Partition(inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
+func PartitionBy(inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
 	outQ, err := NewListQueue()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return PartitionTo(outQ, inQ, f)
+	return PartitionByTo(outQ, inQ, f)
 }
 
-func PartitionTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
+func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
 	errQ, err := NewListQueue()
 	if err != nil {
 		return nil, nil, err

@@ -427,13 +427,13 @@ func TestFilter(t *testing.T) {
 	}
 }
 
-func testPartition(t *testing.T, newQueue newQueueFunc) {
+func testPartitionBy(t *testing.T, newQueue newQueueFunc) {
 	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	partitionsQ, partitionsErrQ, err := Partition(nonNegIntsQ, func(partitionV, v interface{}) (interface{}, error) {
+	partitionsQ, partitionsErrQ, err := PartitionBy(nonNegIntsQ, func(partitionV, v interface{}) (interface{}, error) {
 		switch {
 		case partitionV == nil || v.(int)%10 == 0:
 			return &[]int{v.(int)}, nil
@@ -489,10 +489,10 @@ func testPartition(t *testing.T, newQueue newQueueFunc) {
 	}
 }
 
-func TestPartition(t *testing.T) {
+func TestPartitionBy(t *testing.T) {
 	for name, newQueue := range testInputs {
 		t.Run(name, func(t *testing.T) {
-			testPartition(t, newQueue)
+			testPartitionBy(t, newQueue)
 		})
 	}
 }
