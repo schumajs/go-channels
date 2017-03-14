@@ -452,53 +452,221 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 	return outQs, errQ, nil
 }
 
-func Pipe(inQ Queue, fs ...func(v interface{}) (interface{}, bool, error)) (Queue, Queue, error) {
-	var outQ Queue
+func Map(inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, Queue, error) {
+	outQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
 
-	errQs := make([]Queue, len(fs))
+	return MapTo(outQ, inQ, f)
+}
 
-	for i, f := range fs {
-		var err error
+func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, Queue, error) {
+	errQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
 
-		outQ, err = NewListQueue()
-		if err != nil {
-			return nil, nil, err
+	go func() {
+		defer outQ.Close()
+
+		defer errQ.Close()
+
+		for {
+			v, closed, err := inQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				errQ.Enqueue(err)
+			}
+
+			v, err = f(v)
+			if err != nil {
+				errQ.Enqueue(err)
+			}
+
+			err = outQ.Enqueue(v)
+			if err != nil {
+				errQ.Enqueue(err)
+			}
 		}
+	}()
 
-		errQs[i], err = NewListQueue()
-		if err != nil {
-			return nil, nil, err
-		}
+	return outQ, errQ, nil
+}
 
-		go func(inQ, outQ, errQ Queue, f func(v interface{}) (interface{}, bool, error)) {
-			defer outQ.Close()
+func Reduce(inQ Queue, f func(accV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
+	outQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
 
-			defer errQ.Close()
+	return ReduceTo(outQ, inQ, f)
+}
 
-			for {
-				v, closed, err := inQ.Dequeue()
-				switch {
-				case closed:
-					return
-				case err != nil:
-					errQ.Enqueue(err)
-				}
+func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
+	errQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
 
-				var enqueue bool
+	go func() {
+		defer outQ.Close()
 
-				v, enqueue, err = f(v)
+		defer errQ.Close()
+
+		var accV interface{}
+
+		for {
+			v, closed, err := inQ.Dequeue()
+			switch {
+			case closed:
+				err = outQ.Enqueue(accV)
 				if err != nil {
 					errQ.Enqueue(err)
 				}
 
-				if enqueue {
-					err = outQ.Enqueue(v)
-					if err != nil {
-						errQ.Enqueue(err)
-					}
+				return
+			case err != nil:
+				errQ.Enqueue(err)
+			}
+
+			accV, err = f(accV, v)
+			if err != nil {
+				errQ.Enqueue(err)
+			}
+		}
+	}()
+
+	return outQ, errQ, nil
+}
+
+func Filter(inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queue, error) {
+	outQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return FilterTo(outQ, inQ, f)
+}
+
+func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queue, error) {
+	errQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	go func() {
+		defer outQ.Close()
+
+		defer errQ.Close()
+
+		for {
+			v, closed, err := inQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				errQ.Enqueue(err)
+			}
+
+			enqueue, err := f(v)
+			if err != nil {
+				errQ.Enqueue(err)
+			}
+
+			if enqueue {
+				err = outQ.Enqueue(v)
+				if err != nil {
+					errQ.Enqueue(err)
 				}
 			}
-		}(inQ, outQ, errQs[i], f)
+		}
+	}()
+
+	return outQ, errQ, nil
+}
+
+func Partition(inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
+	outQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return PartitionTo(outQ, inQ, f)
+}
+
+func PartitionTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
+	errQ, err := NewListQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	go func() {
+		defer outQ.Close()
+
+		defer errQ.Close()
+
+		var partitionV interface{}
+
+		for {
+			v, closed, err := inQ.Dequeue()
+			switch {
+			case closed:
+				err = outQ.Enqueue(partitionV)
+				if err != nil {
+					errQ.Enqueue(err)
+				}
+
+				return
+			case err != nil:
+				errQ.Enqueue(err)
+			}
+
+			newPartitionV, err := f(partitionV, v)
+			if err != nil {
+				errQ.Enqueue(err)
+			}
+
+			switch {
+			case partitionV == nil:
+				partitionV = newPartitionV
+			case partitionV != nil && partitionV != newPartitionV:
+				err = outQ.Enqueue(partitionV)
+				if err != nil {
+					errQ.Enqueue(err)
+				}
+
+				partitionV = newPartitionV
+			}
+		}
+	}()
+
+	return outQ, errQ, nil
+}
+
+func Compose(inQ Queue, fs ...interface{}) (Queue, Queue, error) {
+	var outQ Queue
+
+	errQs := make([]Queue, len(fs)/2)
+
+	for i := 0; i < len(fs); i += 2 {
+		paramVs := []reflect.Value{
+			reflect.ValueOf(inQ),
+			reflect.ValueOf(fs[i+1]),
+		}
+
+		returnVs := reflect.ValueOf(fs[i]).Call(paramVs)
+
+		outQ = returnVs[0].Interface().(Queue)
+
+		errQs[i/2] = returnVs[1].Interface().(Queue)
+
+		err := returnVs[2].Interface()
+		if err != nil {
+			return nil, nil, err.(error)
+		}
 
 		inQ = outQ
 	}

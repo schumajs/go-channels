@@ -70,25 +70,6 @@ func nonNegInts(newQueue newQueueFunc, count int) (Queue, Queue, error) {
 	return outQ, errQ, nil
 }
 
-func square(v interface{}) (interface{}, bool, error) {
-	// fmt.Printf("%v\n", v)
-	return v.(int) * v.(int), true, nil
-}
-
-type sumer struct {
-	Count int
-	count int
-	sum   int
-}
-
-func (s *sumer) Sum(v interface{}) (interface{}, bool, error) {
-	s.count++
-
-	s.sum += v.(int)
-
-	return s.sum, (s.count == s.Count), nil
-}
-
 func testQueue(t *testing.T, newQueue newQueueFunc) {
 	nonNegIntsQ, errQ, err := nonNegInts(newQueue, 1000)
 	if err != nil {
@@ -139,44 +120,17 @@ func TestQueue(t *testing.T) {
 }
 
 func testJoin(t *testing.T, newQueue newQueueFunc) {
-	square := func(inQ Queue) Queue {
-		outQ, err := newQueue()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		go func() {
-			defer outQ.Close()
-
-			for {
-				v, closed, err := inQ.Dequeue()
-				switch {
-				case closed:
-					return
-				case err != nil:
-					t.Fatal(err)
-				}
-
-				err = outQ.Enqueue(v.(int) * v.(int))
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-		}()
-
-		return outQ
-	}
-
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	nonNegIntsQ1, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	squaresQ1 := square(nonNegIntsQ)
+	nonNegIntsQ2, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	squaresQ2 := square(nonNegIntsQ)
-
-	squaresQ, err := Join(squaresQ1, squaresQ2)
+	joinedQ, err := Join(nonNegIntsQ1, nonNegIntsQ2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +150,7 @@ func testJoin(t *testing.T, newQueue newQueueFunc) {
 	sum := 0
 
 	for i := 0; ; i++ {
-		v, closed, err := squaresQ.Dequeue()
+		v, closed, err := joinedQ.Dequeue()
 		if closed {
 			break
 		}
@@ -207,7 +161,7 @@ func testJoin(t *testing.T, newQueue newQueueFunc) {
 		sum = sum + v.(int)
 	}
 
-	if sum != 332833500 {
+	if sum != 999000 {
 		t.Fatalf("expected sum<%d> = 332833500", sum)
 	}
 }
@@ -222,7 +176,7 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 		t.Fatal(err)
 	}
 
-	oddAndEvenQs, oddAndEvensErrQ, err := Split(
+	oddsAndEvensQs, oddsAndEvensErrQ, err := Split(
 		nonNegIntsQ,
 		func(outQ Queue, v interface{}) error {
 			if v.(int)%2 != 0 {
@@ -248,7 +202,7 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 		t.Fatal(err)
 	}
 
-	errQ, err := Join(nonNegIntsErrQ, oddAndEvensErrQ)
+	errQ, err := Join(nonNegIntsErrQ, oddsAndEvensErrQ)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +227,7 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 		defer wg.Done()
 
 		for i := 1; ; i += 2 {
-			v, closed, err := oddAndEvenQs[0].Dequeue()
+			v, closed, err := oddsAndEvensQs[0].Dequeue()
 			switch {
 			case closed:
 				return
@@ -291,7 +245,7 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 		defer wg.Done()
 
 		for i := 0; ; i += 2 {
-			v, closed, err := oddAndEvenQs[1].Dequeue()
+			v, closed, err := oddsAndEvensQs[1].Dequeue()
 			switch {
 			case closed:
 				return
@@ -312,17 +266,257 @@ func TestSplit(t *testing.T) {
 	testSplit(t, testInputs["ListQueue"])
 }
 
-func testPipe(t *testing.T, newQueue newQueueFunc) {
+func testMap(t *testing.T, newQueue newQueueFunc) {
 	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	sumer := &sumer{
-		Count: 1000,
+	squaresQ, squaresErrQ, err := Map(nonNegIntsQ, func(v interface{}) (interface{}, error) {
+		return v.(int) * v.(int), nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	sumOfSquaresQ, sumOfSquaresErrQ, err := Pipe(nonNegIntsQ, square, sumer.Sum)
+	errQ, err := Join(nonNegIntsErrQ, squaresErrQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	for i := 0; ; i++ {
+		v, closed, err := squaresQ.Dequeue()
+		if closed {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if v.(int) != i*i {
+			t.Fatalf("expected v<%d> = %d", v, i*i)
+		}
+	}
+}
+
+func TestMap(t *testing.T) {
+	for name, newQueue := range testInputs {
+		t.Run(name, func(t *testing.T) {
+			testMap(t, newQueue)
+		})
+	}
+}
+
+func testReduce(t *testing.T, newQueue newQueueFunc) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sumQ, sumErrQ, err := Reduce(nonNegIntsQ, func(accV, v interface{}) (interface{}, error) {
+		switch {
+		case accV == nil:
+			return int(0), nil
+		default:
+			return accV.(int) + v.(int), nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errQ, err := Join(nonNegIntsErrQ, sumErrQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	v, _, err := sumQ.Dequeue()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum := v.(int)
+
+	if sum != 499500 {
+		t.Fatalf("expected sum<%d> = 499500", sum)
+	}
+}
+
+func TestReduce(t *testing.T) {
+	for name, newQueue := range testInputs {
+		t.Run(name, func(t *testing.T) {
+			testReduce(t, newQueue)
+		})
+	}
+}
+
+func testFilter(t *testing.T, newQueue newQueueFunc) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oddsQ, oddsErrQ, err := Filter(nonNegIntsQ, func(v interface{}) (bool, error) {
+		return v.(int)%2 == 1, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errQ, err := Join(nonNegIntsErrQ, oddsErrQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	for i := 1; ; i += 2 {
+		v, closed, err := oddsQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case err != nil:
+			t.Fatal(err)
+		}
+
+		if v.(int) != i {
+			t.Fatalf("expected v<%d> = %d", v, i)
+		}
+	}
+}
+
+func TestFilter(t *testing.T) {
+	for name, newQueue := range testInputs {
+		t.Run(name, func(t *testing.T) {
+			testFilter(t, newQueue)
+		})
+	}
+}
+
+func testPartition(t *testing.T, newQueue newQueueFunc) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	partitionsQ, partitionsErrQ, err := Partition(nonNegIntsQ, func(partitionV, v interface{}) (interface{}, error) {
+		switch {
+		case partitionV == nil || v.(int)%10 == 0:
+			return &[]int{v.(int)}, nil
+		default:
+			partition := partitionV.(*[]int)
+
+			*partition = append(*partition, v.(int))
+
+			return partition, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errQ, err := Join(nonNegIntsErrQ, partitionsErrQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		for {
+			_, closed, err := errQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	partitionsCount := 0
+
+	for {
+		v, closed, err := partitionsQ.Dequeue()
+		if closed {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		partitionsCount++
+
+		if len(*v.(*[]int)) != 10 {
+			t.Fatalf("expected v<%d> = %d", len(*v.(*[]int)), 10)
+		}
+	}
+
+	if partitionsCount != 100 {
+		t.Fatalf("expected partitions count<%d> = 100", partitionsCount)
+	}
+}
+
+func TestPartition(t *testing.T) {
+	for name, newQueue := range testInputs {
+		t.Run(name, func(t *testing.T) {
+			testPartition(t, newQueue)
+		})
+	}
+}
+
+func testCompose(t *testing.T, newQueue newQueueFunc) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	square := func(v interface{}) (interface{}, error) {
+		return v.(int) * v.(int), nil
+	}
+
+	sum := func(accV, v interface{}) (interface{}, error) {
+		switch {
+		case accV == nil:
+			return int(0), nil
+		default:
+			return accV.(int) + v.(int), nil
+		}
+	}
+
+	sumOfSquaresQ, sumOfSquaresErrQ, err := Compose(nonNegIntsQ, Map, square, Reduce, sum)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,15 +543,17 @@ func testPipe(t *testing.T, newQueue newQueueFunc) {
 		t.Fatal(err)
 	}
 
-	sum := v.(int)
-
-	if sum != 332833500 {
-		t.Fatalf("expected sum<%d> = 332833500", sum)
+	if v.(int) != 332833500 {
+		t.Fatalf("expected v<%d> = 332833500", v.(int))
 	}
 }
 
-func TestPipe(t *testing.T) {
-	testPipe(t, testInputs["ListQueue"])
+func TestCompose(t *testing.T) {
+	for name, newQueue := range testInputs {
+		t.Run(name, func(t *testing.T) {
+			testCompose(t, newQueue)
+		})
+	}
 }
 
 type chanQueue struct {
