@@ -18,6 +18,9 @@ import (
 type newQueueFunc func() (Queue, error)
 
 var testInputs = map[string]newQueueFunc{
+	"ChanQueue": newQueueFunc(func() (Queue, error) {
+		return NewChanQueue()
+	}),
 	"ListQueue": newQueueFunc(func() (Queue, error) {
 		return NewListQueue()
 	}),
@@ -43,8 +46,8 @@ var testInputs = map[string]newQueueFunc{
 	}),
 }
 
-func nonNegInts(newQueue newQueueFunc, count int) (Queue, Queue, error) {
-	outQ, err := newQueue()
+func nonNegInts(testInput string, count int) (Queue, Queue, error) {
+	outQ, err := testInputs[testInput]()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -70,8 +73,8 @@ func nonNegInts(newQueue newQueueFunc, count int) (Queue, Queue, error) {
 	return outQ, errQ, nil
 }
 
-func testQueue(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, errQ, err := nonNegInts(newQueue, 1000)
+func testQueue(t *testing.T, testInput string) {
+	nonNegIntsQ, errQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,43 +92,57 @@ func testQueue(t *testing.T, newQueue newQueueFunc) {
 	}()
 
 	for i := 0; ; i++ {
-		v, closed, err := nonNegIntsQ.Dequeue(true)
-		switch {
-		case closed:
-			return
-		case err != nil:
-			t.Fatal(err)
-		}
+		if testInput == "ChanQueue" {
+			v, closed, err := nonNegIntsQ.Dequeue()
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
 
-		if v.(int) != i {
-			t.Fatalf("expected v<%d> = %d", v, i)
-		}
+			if v.(int) != i {
+				t.Fatalf("expected v<%d> = %d", v, i)
+			}
+		} else {
+			v, closed, err := nonNegIntsQ.Dequeue(true)
+			switch {
+			case closed:
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
 
-		_, closed, err = nonNegIntsQ.Dequeue()
-		switch {
-		case closed:
-			t.Fatalf("expected queue to be open")
-		case err != nil:
-			t.Fatal(err)
+			if v.(int) != i {
+				t.Fatalf("expected v<%d> = %d", v, i)
+			}
+
+			_, closed, err = nonNegIntsQ.Dequeue()
+			switch {
+			case closed:
+				t.Fatalf("expected queue to be open")
+			case err != nil:
+				t.Fatal(err)
+			}
 		}
 	}
 }
 
 func TestQueue(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testQueue(t, newQueue)
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testQueue(t, testInput)
 		})
 	}
 }
 
-func testJoin(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ1, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testJoin(t *testing.T, testInput string) {
+	nonNegIntsQ1, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	nonNegIntsQ2, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+	nonNegIntsQ2, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,11 +184,15 @@ func testJoin(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestJoin(t *testing.T) {
-	testJoin(t, testInputs["ListQueue"])
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testJoin(t, testInput)
+		})
+	}
 }
 
-func testSplit(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testSplit(t *testing.T, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,11 +284,15 @@ func testSplit(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestSplit(t *testing.T) {
-	testSplit(t, testInputs["ListQueue"])
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testSplit(t, testInput)
+		})
+	}
 }
 
-func testMap(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testMap(t *testing.T, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,15 +337,15 @@ func testMap(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestMap(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testMap(t, newQueue)
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testMap(t, testInput)
 		})
 	}
 }
 
-func testReduce(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testReduce(t *testing.T, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,15 +392,15 @@ func testReduce(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestReduce(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testReduce(t, newQueue)
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testReduce(t, testInput)
 		})
 	}
 }
 
-func testFilter(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testFilter(t *testing.T, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,15 +445,15 @@ func testFilter(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestFilter(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testFilter(t, newQueue)
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testFilter(t, testInput)
 		})
 	}
 }
 
-func testPartitionBy(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testPartitionBy(t *testing.T, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,15 +515,15 @@ func testPartitionBy(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestPartitionBy(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testPartitionBy(t, newQueue)
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testPartitionBy(t, testInput)
 		})
 	}
 }
 
-func testCompose(t *testing.T, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 1000)
+func testCompose(t *testing.T, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,47 +574,15 @@ func testCompose(t *testing.T, newQueue newQueueFunc) {
 }
 
 func TestCompose(t *testing.T) {
-	for name, newQueue := range testInputs {
-		t.Run(name, func(t *testing.T) {
-			testCompose(t, newQueue)
+	for testInput := range testInputs {
+		t.Run(testInput, func(t *testing.T) {
+			testCompose(t, testInput)
 		})
 	}
 }
 
-type chanQueue struct {
-	elements chan interface{}
-}
-
-func newChanQueue() (Queue, error) {
-	q := &chanQueue{}
-
-	q.elements = make(chan interface{})
-
-	return q, nil
-}
-
-func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
-	// peek not supported
-
-	v, open := <-q.elements
-
-	return v, !open, nil
-}
-
-func (q *chanQueue) Enqueue(v interface{}) error {
-	q.elements <- v
-
-	return nil
-}
-
-func (q *chanQueue) Close() error {
-	close(q.elements)
-
-	return nil
-}
-
-func benchmarkQueue(b *testing.B, newQueue newQueueFunc) {
-	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(newQueue, 100000)
+func benchmarkQueue(b *testing.B, testInput string) {
+	nonNegIntsQ, nonNegIntsErrQ, err := nonNegInts(testInput, 100000)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -622,15 +615,10 @@ func benchmarkQueue(b *testing.B, newQueue newQueueFunc) {
 }
 
 func BenchmarkQueue(b *testing.B) {
-	testInputs["ChanQueue"] = newQueueFunc(func() (Queue, error) {
-		return newChanQueue()
-	})
-	defer delete(testInputs, "chanQueue")
-
-	for name, newQueue := range testInputs {
-		b.Run(name, func(b *testing.B) {
+	for testInput := range testInputs {
+		b.Run(testInput, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchmarkQueue(b, newQueue)
+				benchmarkQueue(b, testInput)
 			}
 		})
 	}

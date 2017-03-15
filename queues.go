@@ -12,17 +12,55 @@ import (
 	"container/list"
 	"encoding/binary"
 	"encoding/gob"
-	"errors"
 	"reflect"
 	"sync"
 
 	"github.com/boltdb/bolt"
+	"github.com/schumajs/go-errors"
 )
 
 type Queue interface {
 	Enqueue(v interface{}) error
 	Dequeue(peek ...bool) (interface{}, bool, error)
 	Close() error
+}
+
+type chanQueue struct {
+	elements chan interface{}
+}
+
+func NewChanQueue(capacity ...int) (Queue, error) {
+	if len(capacity) == 0 {
+		capacity = append(capacity, 0)
+	}
+
+	q := &chanQueue{}
+
+	q.elements = make(chan interface{}, capacity[0])
+
+	return q, nil
+}
+
+func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+	if len(peek) != 0 {
+		return nil, false, errors.New("peek not supported")
+	}
+
+	v, open := <-q.elements
+
+	return v, !open, nil
+}
+
+func (q *chanQueue) Enqueue(v interface{}) error {
+	q.elements <- v
+
+	return nil
+}
+
+func (q *chanQueue) Close() error {
+	close(q.elements)
+
+	return nil
 }
 
 type listQueue struct {
@@ -124,13 +162,13 @@ func NewBoltDbQueue(db *bolt.DB, elementTypes []interface{}) (Queue, error) {
 	err := db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists([]byte("queue"))
 		if err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err)
 	}
 
 	q.elementTypes = map[string]reflect.Type{}
@@ -159,7 +197,7 @@ func (q *boltDbQueue) length() (int, error) {
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err)
 	}
 
 	return length, nil
@@ -187,7 +225,7 @@ func (q *boltDbQueue) dequeue(peek bool) (interface{}, error) {
 
 		err := decoder.Decode(&typeName)
 		if err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 
 		reflectType, ok := q.elementTypes[typeName]
@@ -199,7 +237,7 @@ func (q *boltDbQueue) dequeue(peek bool) (interface{}, error) {
 
 		err = decoder.DecodeValue(reflectValue)
 		if err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 
 		v = reflectValue.Interface()
@@ -207,14 +245,14 @@ func (q *boltDbQueue) dequeue(peek bool) (interface{}, error) {
 		if !peek {
 			err = cursor.Delete()
 			if err != nil {
-				return err
+				return errors.Wrap(err)
 			}
 		}
 
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err)
 	}
 
 	return v, nil
@@ -238,23 +276,23 @@ func (q *boltDbQueue) enqueue(v interface{}) error {
 
 		err := encoder.Encode(&typeName)
 		if err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 
 		err = encoder.Encode(v)
 		if err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 
 		err = bucket.Put(key, buffer.Bytes())
 		if err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 
 		return nil
 	})
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	return nil
@@ -270,7 +308,7 @@ func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 
 	length, err := q.length()
 	if err != nil {
-		return nil, false, err
+		return nil, false, errors.Wrap(err)
 	}
 
 	for !(length > 0 || q.closed) {
@@ -278,7 +316,7 @@ func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 
 		length, err = q.length()
 		if err != nil {
-			return nil, false, err
+			return nil, false, errors.Wrap(err)
 		}
 	}
 
@@ -286,12 +324,12 @@ func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	case length > 0:
 		v, err := q.dequeue(peek[0])
 		if err != nil {
-			return nil, false, err
+			return nil, false, errors.Wrap(err)
 		}
 
-		return v, false, err
+		return v, false, nil
 	case q.closed:
-		return nil, true, err
+		return nil, true, nil
 	}
 
 	return nil, false, nil
@@ -303,7 +341,7 @@ func (q *boltDbQueue) Enqueue(v interface{}) error {
 
 	err := q.enqueue(v)
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	q.cond.Signal()
@@ -333,9 +371,9 @@ func newJoinedQueue(inQs ...Queue) (Queue, error) {
 
 	q.inQs = inQs
 
-	outQ, err := NewListQueue()
+	outQ, err := NewChanQueue()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err)
 	}
 
 	q.outQ = outQ
@@ -353,12 +391,12 @@ func newJoinedQueue(inQs ...Queue) (Queue, error) {
 			case closed:
 				return
 			case err != nil:
-				q.errC <- err
+				q.errC <- errors.Wrap(err)
 			}
 
 			err = outQ.Enqueue(v)
 			if err != nil {
-				q.errC <- err
+				q.errC <- errors.Wrap(err)
 			}
 		}
 	}
@@ -374,7 +412,7 @@ func newJoinedQueue(inQs ...Queue) (Queue, error) {
 
 		err := q.outQ.Close()
 		if err != nil {
-			q.errC <- err
+			q.errC <- errors.Wrap(err)
 		}
 	}()
 
@@ -388,7 +426,7 @@ func (q *joinedQueue) Enqueue(v interface{}) error {
 func (q *joinedQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	select {
 	case err := <-q.errC:
-		return nil, false, err
+		return nil, false, errors.Wrap(err)
 	default:
 		return q.outQ.Dequeue(peek...)
 	}
@@ -406,17 +444,17 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 	outQs := []Queue{}
 
 	for range outs {
-		outQ, err := NewListQueue()
+		outQ, err := NewChanQueue()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, errors.Wrap(err)
 		}
 
 		outQs = append(outQs, outQ)
 	}
 
-	errQ, err := NewListQueue()
+	errQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	go func() {
@@ -424,7 +462,7 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 			for _, outQ := range outQs {
 				err := outQ.Close()
 				if err != nil {
-					errQ.Enqueue(err)
+					errQ.Enqueue(errors.Wrap(err))
 				}
 			}
 		}()
@@ -437,13 +475,13 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			for i, outQ := range outQs {
 				err := outs[i](outQ, v)
 				if err != nil {
-					errQ.Enqueue(err)
+					errQ.Enqueue(errors.Wrap(err))
 				}
 			}
 		}
@@ -453,18 +491,18 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 }
 
 func Map(inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	outQ, err := NewListQueue()
+	outQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	return MapTo(outQ, inQ, f)
 }
 
 func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	errQ, err := NewListQueue()
+	errQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	go func() {
@@ -478,17 +516,17 @@ func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, 
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			v, err = f(v)
 			if err != nil {
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			err = outQ.Enqueue(v)
 			if err != nil {
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 		}
 	}()
@@ -497,18 +535,18 @@ func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, 
 }
 
 func Reduce(inQ Queue, f func(accV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	outQ, err := NewListQueue()
+	outQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	return ReduceTo(outQ, inQ, f)
 }
 
 func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	errQ, err := NewListQueue()
+	errQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	go func() {
@@ -524,17 +562,17 @@ func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error))
 			case closed:
 				err = outQ.Enqueue(accV)
 				if err != nil {
-					errQ.Enqueue(err)
+					errQ.Enqueue(errors.Wrap(err))
 				}
 
 				return
 			case err != nil:
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			accV, err = f(accV, v)
 			if err != nil {
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 		}
 	}()
@@ -543,18 +581,18 @@ func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error))
 }
 
 func Filter(inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queue, error) {
-	outQ, err := NewListQueue()
+	outQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	return FilterTo(outQ, inQ, f)
 }
 
 func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queue, error) {
-	errQ, err := NewListQueue()
+	errQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	go func() {
@@ -568,18 +606,18 @@ func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queu
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			enqueue, err := f(v)
 			if err != nil {
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			if enqueue {
 				err = outQ.Enqueue(v)
 				if err != nil {
-					errQ.Enqueue(err)
+					errQ.Enqueue(errors.Wrap(err))
 				}
 			}
 		}
@@ -589,18 +627,18 @@ func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queu
 }
 
 func PartitionBy(inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	outQ, err := NewListQueue()
+	outQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	return PartitionByTo(outQ, inQ, f)
 }
 
 func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	errQ, err := NewListQueue()
+	errQ, err := NewChanQueue()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	go func() {
@@ -616,17 +654,17 @@ func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface
 			case closed:
 				err = outQ.Enqueue(partitionV)
 				if err != nil {
-					errQ.Enqueue(err)
+					errQ.Enqueue(errors.Wrap(err))
 				}
 
 				return
 			case err != nil:
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			newPartitionV, err := f(partitionV, v)
 			if err != nil {
-				errQ.Enqueue(err)
+				errQ.Enqueue(errors.Wrap(err))
 			}
 
 			switch {
@@ -635,7 +673,7 @@ func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface
 			case partitionV != nil && partitionV != newPartitionV:
 				err = outQ.Enqueue(partitionV)
 				if err != nil {
-					errQ.Enqueue(err)
+					errQ.Enqueue(errors.Wrap(err))
 				}
 
 				partitionV = newPartitionV
@@ -665,7 +703,7 @@ func Compose(inQ Queue, fs ...interface{}) (Queue, Queue, error) {
 
 		err := returnVs[2].Interface()
 		if err != nil {
-			return nil, nil, err.(error)
+			return nil, nil, errors.Wrap(err)
 		}
 
 		inQ = outQ
@@ -673,7 +711,7 @@ func Compose(inQ Queue, fs ...interface{}) (Queue, Queue, error) {
 
 	errQ, err := Join(errQs...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err)
 	}
 
 	return outQ, errQ, nil
