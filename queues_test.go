@@ -81,10 +81,12 @@ func testQueue(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -154,10 +156,12 @@ func testJoin(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := nonNegIntsErrQ.Dequeue()
+			err, closed, derr := nonNegIntsErrQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -230,10 +234,12 @@ func testSplit(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -311,10 +317,12 @@ func testMap(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -369,10 +377,12 @@ func testReduce(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -419,10 +429,12 @@ func testFilter(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -481,10 +493,12 @@ func testPartitionBy(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -553,10 +567,12 @@ func testCompose(t *testing.T, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := errQ.Dequeue()
+			err, closed, derr := errQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				t.Fatal(derr)
 			case err != nil:
 				t.Fatal(err)
 			}
@@ -589,10 +605,12 @@ func benchmarkQueue(b *testing.B, testInput string) {
 
 	go func() {
 		for {
-			_, closed, err := nonNegIntsErrQ.Dequeue()
+			err, closed, derr := nonNegIntsErrQ.Dequeue()
 			switch {
 			case closed:
 				return
+			case derr != nil:
+				b.Fatal(derr)
 			case err != nil:
 				b.Fatal(err)
 			}

@@ -462,12 +462,20 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 			for _, outQ := range outQs {
 				err := outQ.Close()
 				if err != nil {
-					errQ.Enqueue(errors.Wrap(err))
+					eerr := errQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
 				}
 			}
 		}()
 
-		defer errQ.Close()
+		defer func() {
+			cerr := errQ.Close()
+			if cerr != nil {
+				errors.Print(err)
+			}
+		}()
 
 		for {
 			v, closed, err := inQ.Dequeue()
@@ -475,13 +483,19 @@ func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Q
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			for i, outQ := range outQs {
 				err := outs[i](outQ, v)
 				if err != nil {
-					errQ.Enqueue(errors.Wrap(err))
+					eerr := errQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
 				}
 			}
 		}
@@ -506,9 +520,22 @@ func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, 
 	}
 
 	go func() {
-		defer outQ.Close()
+		defer func() {
+			cerr := outQ.Close()
+			if cerr != nil {
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
+			}
+		}()
 
-		defer errQ.Close()
+		defer func() {
+			cerr := errQ.Close()
+			if cerr != nil {
+				errors.Print(err)
+			}
+		}()
 
 		for {
 			v, closed, err := inQ.Dequeue()
@@ -516,17 +543,26 @@ func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, 
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			v, err = f(v)
 			if err != nil {
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			err = outQ.Enqueue(v)
 			if err != nil {
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 		}
 	}()
@@ -550,9 +586,22 @@ func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error))
 	}
 
 	go func() {
-		defer outQ.Close()
+		defer func() {
+			cerr := outQ.Close()
+			if cerr != nil {
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
+			}
+		}()
 
-		defer errQ.Close()
+		defer func() {
+			cerr := errQ.Close()
+			if cerr != nil {
+				errors.Print(err)
+			}
+		}()
 
 		var accV interface{}
 
@@ -562,17 +611,26 @@ func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error))
 			case closed:
 				err = outQ.Enqueue(accV)
 				if err != nil {
-					errQ.Enqueue(errors.Wrap(err))
+					eerr := errQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
 				}
 
 				return
 			case err != nil:
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			accV, err = f(accV, v)
 			if err != nil {
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 		}
 	}()
@@ -596,9 +654,22 @@ func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queu
 	}
 
 	go func() {
-		defer outQ.Close()
+		defer func() {
+			cerr := outQ.Close()
+			if cerr != nil {
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
+			}
+		}()
 
-		defer errQ.Close()
+		defer func() {
+			cerr := errQ.Close()
+			if cerr != nil {
+				errors.Print(err)
+			}
+		}()
 
 		for {
 			v, closed, err := inQ.Dequeue()
@@ -606,18 +677,27 @@ func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queu
 			case closed:
 				return
 			case err != nil:
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			enqueue, err := f(v)
 			if err != nil {
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			if enqueue {
 				err = outQ.Enqueue(v)
 				if err != nil {
-					errQ.Enqueue(errors.Wrap(err))
+					eerr := errQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
 				}
 			}
 		}
@@ -642,9 +722,22 @@ func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface
 	}
 
 	go func() {
-		defer outQ.Close()
+		defer func() {
+			cerr := outQ.Close()
+			if cerr != nil {
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
+			}
+		}()
 
-		defer errQ.Close()
+		defer func() {
+			cerr := errQ.Close()
+			if cerr != nil {
+				errors.Print(err)
+			}
+		}()
 
 		var partitionV interface{}
 
@@ -654,17 +747,26 @@ func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface
 			case closed:
 				err = outQ.Enqueue(partitionV)
 				if err != nil {
-					errQ.Enqueue(errors.Wrap(err))
+					eerr := errQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
 				}
 
 				return
 			case err != nil:
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			newPartitionV, err := f(partitionV, v)
 			if err != nil {
-				errQ.Enqueue(errors.Wrap(err))
+				eerr := errQ.Enqueue(errors.Wrap(err))
+				if eerr != nil {
+					errors.Print(err)
+				}
 			}
 
 			switch {
@@ -673,7 +775,10 @@ func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface
 			case partitionV != nil && partitionV != newPartitionV:
 				err = outQ.Enqueue(partitionV)
 				if err != nil {
-					errQ.Enqueue(errors.Wrap(err))
+					eerr := errQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
 				}
 
 				partitionV = newPartitionV
