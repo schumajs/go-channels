@@ -79,27 +79,29 @@ func testQueue(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
 	for i := 0; ; i++ {
 		if testInput == "ChanQueue" {
 			v, closed, err := nonNegIntsQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case err != nil:
+			if closed {
+				break
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 
@@ -108,10 +110,10 @@ func testQueue(t *testing.T, testInput string) {
 			}
 		} else {
 			v, closed, err := nonNegIntsQ.Dequeue(true)
-			switch {
-			case closed:
-				return
-			case err != nil:
+			if closed {
+				break
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 
@@ -127,6 +129,11 @@ func testQueue(t *testing.T, testInput string) {
 				t.Fatal(err)
 			}
 		}
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -154,17 +161,19 @@ func testJoin(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := nonNegIntsErrQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := nonNegIntsErrQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
@@ -184,6 +193,11 @@ func testJoin(t *testing.T, testInput string) {
 
 	if sum != 999000 {
 		t.Fatalf("expected sum<%d> = 332833500", sum)
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -232,17 +246,19 @@ func testSplit(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
@@ -287,6 +303,11 @@ func testSplit(t *testing.T, testInput string) {
 	}()
 
 	wg.Wait()
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSplit(t *testing.T) {
@@ -315,17 +336,19 @@ func testMap(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
@@ -341,6 +364,11 @@ func testMap(t *testing.T, testInput string) {
 		if v.(int) != i*i {
 			t.Fatalf("expected v<%d> = %d", v, i*i)
 		}
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -375,17 +403,19 @@ func testReduce(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
@@ -398,6 +428,11 @@ func testReduce(t *testing.T, testInput string) {
 
 	if sum != 499500 {
 		t.Fatalf("expected sum<%d> = 499500", sum)
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -427,32 +462,39 @@ func testFilter(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
 	for i := 1; ; i += 2 {
 		v, closed, err := oddsQ.Dequeue()
-		switch {
-		case closed:
-			return
-		case err != nil:
+		if closed {
+			break
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 
 		if v.(int) != i {
 			t.Fatalf("expected v<%d> = %d", v, i)
 		}
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -491,17 +533,19 @@ func testPartitionBy(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
@@ -525,6 +569,11 @@ func testPartitionBy(t *testing.T, testInput string) {
 
 	if partitionsCount != 100 {
 		t.Fatalf("expected partitions count<%d> = 100", partitionsCount)
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -565,17 +614,19 @@ func testCompose(t *testing.T, testInput string) {
 		t.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := errQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				t.Fatal(derr)
-			case err != nil:
-				t.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := errQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			t.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
@@ -586,6 +637,11 @@ func testCompose(t *testing.T, testInput string) {
 
 	if v.(int) != 332833500 {
 		t.Fatalf("expected v<%d> = 332833500", v.(int))
+	}
+
+	err = <-errC
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -603,32 +659,39 @@ func benchmarkQueue(b *testing.B, testInput string) {
 		b.Fatal(err)
 	}
 
+	errC := make(chan error)
+
 	go func() {
-		for {
-			err, closed, derr := nonNegIntsErrQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case derr != nil:
-				b.Fatal(derr)
-			case err != nil:
-				b.Fatal(err)
-			}
+		defer close(errC)
+
+		v, closed, derr := nonNegIntsErrQ.Dequeue()
+		switch {
+		case closed:
+			return
+		case derr != nil:
+			b.Fatal(derr)
+		case v != nil:
+			errC <- v.(error)
 		}
 	}()
 
 	for i := 0; ; i++ {
 		v, closed, err := nonNegIntsQ.Dequeue()
-		switch {
-		case closed:
-			return
-		case err != nil:
+		if closed {
+			break
+		}
+		if err != nil {
 			b.Fatal(err)
 		}
 
 		if v.(int) != i {
 			b.Fatalf("expected v<%d> = %d", v, i)
 		}
+	}
+
+	err = <-errC
+	if err != nil {
+		b.Fatal(err)
 	}
 }
 
