@@ -298,7 +298,7 @@ func (q *BoltDbQueue) dequeue(peek bool) (interface{}, error) {
 
 		reflectType, ok := q.elementTypes[typeName]
 		if !ok {
-			return errors.New("element type is invalid")
+			return errors.New("queues: element type is invalid")
 		}
 
 		reflectValue := reflect.Indirect(reflect.New(reflectType))
