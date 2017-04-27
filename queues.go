@@ -20,30 +20,42 @@ import (
 )
 
 type Queue interface {
+	Open() error
+	Close() error
 	Enqueue(v interface{}) error
 	Dequeue(peek ...bool) (interface{}, bool, error)
-	Close() error
 }
 
-type chanQueue struct {
+type ChanQueue struct {
+	Capacity int
 	elements chan interface{}
 }
 
-func NewChanQueue(capacity ...int) (Queue, error) {
-	if len(capacity) == 0 {
-		capacity = append(capacity, 0)
+func (q *ChanQueue) Open() error {
+	if q.Capacity < 0 {
+		return errors.New("queues: capacity must be greater or equal than zero")
 	}
 
-	q := &chanQueue{}
+	q.elements = make(chan interface{}, q.Capacity)
 
-	q.elements = make(chan interface{}, capacity[0])
-
-	return q, nil
+	return nil
 }
 
-func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *ChanQueue) Close() error {
+	close(q.elements)
+
+	return nil
+}
+
+func (q *ChanQueue) Enqueue(v interface{}) error {
+	q.elements <- v
+
+	return nil
+}
+
+func (q *ChanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	if len(peek) != 0 {
-		return nil, false, errors.New("peek not supported")
+		return nil, false, errors.New("queues: peek not supported")
 	}
 
 	v, open := <-q.elements
@@ -51,42 +63,54 @@ func (q *chanQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return v, !open, nil
 }
 
-func (q *chanQueue) Enqueue(v interface{}) error {
-	q.elements <- v
-
-	return nil
-}
-
-func (q *chanQueue) Close() error {
-	close(q.elements)
-
-	return nil
-}
-
-type listQueue struct {
+type ListQueue struct {
 	elements *list.List
 	lock     *sync.Mutex
 	cond     *sync.Cond
 	closed   bool
 }
 
-func NewListQueue() (Queue, error) {
-	q := &listQueue{}
-
+func (q *ListQueue) Open() error {
 	q.elements = list.New()
 
 	q.lock = &sync.Mutex{}
 
 	q.cond = sync.NewCond(q.lock)
 
-	return q, nil
+	return nil
 }
 
-func (q *listQueue) length() int {
+func (q *ListQueue) Close() error {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
+	q.closed = true
+
+	q.cond.Signal()
+
+	return nil
+}
+
+func (q *ListQueue) enqueue(v interface{}) {
+	q.elements.PushBack(v)
+}
+
+func (q *ListQueue) Enqueue(v interface{}) error {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
+	q.enqueue(v)
+
+	q.cond.Signal()
+
+	return nil
+}
+
+func (q *ListQueue) length() int {
 	return q.elements.Len()
 }
 
-func (q *listQueue) dequeue(peek bool) interface{} {
+func (q *ListQueue) dequeue(peek bool) interface{} {
 	listElement := q.elements.Front()
 
 	element := listElement.Value
@@ -98,11 +122,7 @@ func (q *listQueue) dequeue(peek bool) interface{} {
 	return element
 }
 
-func (q *listQueue) enqueue(v interface{}) {
-	q.elements.PushBack(v)
-}
-
-func (q *listQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *ListQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	if len(peek) == 0 {
 		peek = append(peek, false)
 	}
@@ -124,18 +144,50 @@ func (q *listQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return nil, false, nil
 }
 
-func (q *listQueue) Enqueue(v interface{}) error {
-	q.lock.Lock()
-	defer q.lock.Unlock()
+type BoltDbQueue struct {
+	Db           *bolt.DB
+	ElementTypes []interface{}
+	elementTypes map[string]reflect.Type
+	lock         *sync.Mutex
+	cond         *sync.Cond
+	closed       bool
+}
 
-	q.enqueue(v)
+func (q *BoltDbQueue) Open() error {
+	if q.Db == nil {
+		return errors.New("queues: db must be non-null")
+	}
 
-	q.cond.Signal()
+	if len(q.ElementTypes) == 0 {
+		return errors.New("queues: at least one element type is required")
+	}
+
+	err := q.Db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte("queue"))
+		if err != nil {
+			return errors.Wrap(err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return errors.Wrap(err)
+	}
+
+	q.elementTypes = map[string]reflect.Type{}
+
+	for _, v := range q.ElementTypes {
+		q.elementTypes[reflect.ValueOf(v).Type().Name()] = reflect.ValueOf(v).Type()
+	}
+
+	q.lock = &sync.Mutex{}
+
+	q.cond = sync.NewCond(q.lock)
 
 	return nil
 }
 
-func (q *listQueue) Close() error {
+func (q *BoltDbQueue) Close() error {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
@@ -146,120 +198,8 @@ func (q *listQueue) Close() error {
 	return nil
 }
 
-type boltDbQueue struct {
-	db           *bolt.DB
-	elementTypes map[string]reflect.Type
-	lock         *sync.Mutex
-	cond         *sync.Cond
-	closed       bool
-}
-
-func NewBoltDbQueue(db *bolt.DB, elementTypes []interface{}) (Queue, error) {
-	q := &boltDbQueue{}
-
-	q.db = db
-
-	err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("queue"))
-		if err != nil {
-			return errors.Wrap(err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, errors.Wrap(err)
-	}
-
-	q.elementTypes = map[string]reflect.Type{}
-
-	for _, v := range elementTypes {
-		q.elementTypes[reflect.ValueOf(v).Type().Name()] = reflect.ValueOf(v).Type()
-	}
-
-	q.lock = &sync.Mutex{}
-
-	q.cond = sync.NewCond(q.lock)
-
-	return q, nil
-}
-
-func (q *boltDbQueue) length() (int, error) {
-	var length int
-
-	err := q.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("queue"))
-
-		stats := bucket.Stats()
-
-		length = stats.KeyN
-
-		return nil
-	})
-	if err != nil {
-		return 0, errors.Wrap(err)
-	}
-
-	return length, nil
-}
-
-func (q *boltDbQueue) dequeue(peek bool) (interface{}, error) {
-	var v interface{}
-
-	err := q.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("queue"))
-
-		cursor := bucket.Cursor()
-
-		key, value := cursor.First()
-
-		if key == nil {
-			return nil
-		}
-
-		buffer := bytes.NewReader(value)
-
-		decoder := gob.NewDecoder(buffer)
-
-		var typeName string
-
-		err := decoder.Decode(&typeName)
-		if err != nil {
-			return errors.Wrap(err)
-		}
-
-		reflectType, ok := q.elementTypes[typeName]
-		if !ok {
-			return errors.New("invalid element type")
-		}
-
-		reflectValue := reflect.Indirect(reflect.New(reflectType))
-
-		err = decoder.DecodeValue(reflectValue)
-		if err != nil {
-			return errors.Wrap(err)
-		}
-
-		v = reflectValue.Interface()
-
-		if !peek {
-			err = cursor.Delete()
-			if err != nil {
-				return errors.Wrap(err)
-			}
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, errors.Wrap(err)
-	}
-
-	return v, nil
-}
-
-func (q *boltDbQueue) enqueue(v interface{}) error {
-	err := q.db.Update(func(tx *bolt.Tx) error {
+func (q *BoltDbQueue) enqueue(v interface{}) error {
+	err := q.Db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("queue"))
 
 		nextSeq, _ := bucket.NextSequence()
@@ -298,7 +238,95 @@ func (q *boltDbQueue) enqueue(v interface{}) error {
 	return nil
 }
 
-func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
+func (q *BoltDbQueue) Enqueue(v interface{}) error {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
+	err := q.enqueue(v)
+	if err != nil {
+		return errors.Wrap(err)
+	}
+
+	q.cond.Signal()
+
+	return nil
+}
+
+func (q *BoltDbQueue) length() (int, error) {
+	var length int
+
+	err := q.Db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("queue"))
+
+		stats := bucket.Stats()
+
+		length = stats.KeyN
+
+		return nil
+	})
+	if err != nil {
+		return 0, errors.Wrap(err)
+	}
+
+	return length, nil
+}
+
+func (q *BoltDbQueue) dequeue(peek bool) (interface{}, error) {
+	var v interface{}
+
+	err := q.Db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("queue"))
+
+		cursor := bucket.Cursor()
+
+		key, value := cursor.First()
+
+		if key == nil {
+			return nil
+		}
+
+		buffer := bytes.NewReader(value)
+
+		decoder := gob.NewDecoder(buffer)
+
+		var typeName string
+
+		err := decoder.Decode(&typeName)
+		if err != nil {
+			return errors.Wrap(err)
+		}
+
+		reflectType, ok := q.elementTypes[typeName]
+		if !ok {
+			return errors.New("element type is invalid")
+		}
+
+		reflectValue := reflect.Indirect(reflect.New(reflectType))
+
+		err = decoder.DecodeValue(reflectValue)
+		if err != nil {
+			return errors.Wrap(err)
+		}
+
+		v = reflectValue.Interface()
+
+		if !peek {
+			err = cursor.Delete()
+			if err != nil {
+				return errors.Wrap(err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(err)
+	}
+
+	return v, nil
+}
+
+func (q *BoltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	if len(peek) == 0 {
 		peek = append(peek, false)
 	}
@@ -335,489 +363,471 @@ func (q *boltDbQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
 	return nil, false, nil
 }
 
-func (q *boltDbQueue) Enqueue(v interface{}) error {
-	q.lock.Lock()
-	defer q.lock.Unlock()
+type ComposeFunc func(q Queue) (Queue, error)
 
-	err := q.enqueue(v)
-	if err != nil {
-		return errors.Wrap(err)
-	}
+func Compose(fs ...ComposeFunc) ComposeFunc {
+	return ComposeFunc(func(inQ Queue) (Queue, error) {
+		for _, f := range fs {
+			var err error
 
-	q.cond.Signal()
-
-	return nil
-}
-
-func (q *boltDbQueue) Close() error {
-	q.lock.Lock()
-	defer q.lock.Unlock()
-
-	q.closed = true
-
-	q.cond.Signal()
-
-	return nil
-}
-
-type joinedQueue struct {
-	inQs []Queue
-	outQ Queue
-	errC chan error
-}
-
-func newJoinedQueue(inQs ...Queue) (Queue, error) {
-	q := &joinedQueue{}
-
-	q.inQs = inQs
-
-	outQ, err := NewChanQueue()
-	if err != nil {
-		return nil, errors.Wrap(err)
-	}
-
-	q.outQ = outQ
-
-	q.errC = make(chan error)
-
-	var wg sync.WaitGroup
-
-	output := func(reader Queue) {
-		defer wg.Done()
-
-		for {
-			v, closed, err := reader.Dequeue()
-			switch {
-			case closed:
-				return
-			case err != nil:
-				q.errC <- errors.Wrap(err)
-			}
-
-			err = outQ.Enqueue(v)
+			inQ, err = f(inQ)
 			if err != nil {
-				q.errC <- errors.Wrap(err)
+				return nil, errors.Wrap(err)
 			}
 		}
-	}
 
-	wg.Add(len(q.inQs))
+		return inQ, nil
+	})
+}
 
-	for _, inQ := range q.inQs {
-		go output(inQ)
-	}
+type MapFunc func(v interface{}) (interface{}, error)
 
-	go func() {
-		wg.Wait()
+func Map(f MapFunc) ComposeFunc {
+	return MapTo(&ChanQueue{}, f)
+}
 
-		err := q.outQ.Close()
+func MapTo(outQ Queue, f MapFunc) ComposeFunc {
+	return ComposeFunc(func(inQ Queue) (Queue, error) {
+		if inQ == nil {
+			return nil, errors.New("queues: in queue must be non-null")
+		}
+
+		if outQ == nil {
+			return nil, errors.New("queues: out queue must be non-null")
+		}
+
+		if f == nil {
+			return nil, errors.New("queues: map function must be non-null")
+		}
+
+		err := outQ.Open()
 		if err != nil {
-			q.errC <- errors.Wrap(err)
-		}
-	}()
-
-	return q, nil
-}
-
-func (q *joinedQueue) Enqueue(v interface{}) error {
-	return q.outQ.Enqueue(v)
-}
-
-func (q *joinedQueue) Dequeue(peek ...bool) (interface{}, bool, error) {
-	select {
-	case err := <-q.errC:
-		return nil, false, errors.Wrap(err)
-	default:
-		return q.outQ.Dequeue(peek...)
-	}
-}
-
-func (q *joinedQueue) Close() error {
-	return q.outQ.Close()
-}
-
-func Join(inQs ...Queue) (Queue, error) {
-	return newJoinedQueue(inQs...)
-}
-
-func Split(inQ Queue, outs ...func(outQ Queue, v interface{}) error) ([]Queue, Queue, error) {
-	outQs := []Queue{}
-
-	for range outs {
-		outQ, err := NewChanQueue()
-		if err != nil {
-			return nil, nil, errors.Wrap(err)
+			return nil, errors.Wrap(err)
 		}
 
-		outQs = append(outQs, outQ)
-	}
-
-	errQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	go func() {
-		defer func() {
-			for _, outQ := range outQs {
-				err := outQ.Close()
-				if err != nil {
-					eerr := errQ.Enqueue(errors.Wrap(err))
+		go func() {
+			defer func() {
+				cerr := outQ.Close()
+				if cerr != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
 					if eerr != nil {
 						errors.Print(err)
 					}
 				}
-			}
-		}()
+			}()
 
-		defer func() {
-			cerr := errQ.Close()
-			if cerr != nil {
-				errors.Print(err)
-			}
-		}()
-
-		for {
-			v, closed, err := inQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case err != nil:
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			for i, outQ := range outQs {
-				err := outs[i](outQ, v)
-				if err != nil {
-					eerr := errQ.Enqueue(errors.Wrap(err))
-					if eerr != nil {
-						errors.Print(err)
-					}
-				}
-			}
-		}
-	}()
-
-	return outQs, errQ, nil
-}
-
-func Map(inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	outQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	return MapTo(outQ, inQ, f)
-}
-
-func MapTo(outQ, inQ Queue, f func(v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	errQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	go func() {
-		defer func() {
-			cerr := outQ.Close()
-			if cerr != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-		}()
-
-		defer func() {
-			cerr := errQ.Close()
-			if cerr != nil {
-				errors.Print(err)
-			}
-		}()
-
-		for {
-			v, closed, err := inQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case err != nil:
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			v, err = f(v)
-			if err != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			err = outQ.Enqueue(v)
-			if err != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-		}
-	}()
-
-	return outQ, errQ, nil
-}
-
-func Reduce(inQ Queue, f func(accV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	outQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	return ReduceTo(outQ, inQ, f)
-}
-
-func ReduceTo(outQ, inQ Queue, f func(accV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	errQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	go func() {
-		defer func() {
-			cerr := outQ.Close()
-			if cerr != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-		}()
-
-		defer func() {
-			cerr := errQ.Close()
-			if cerr != nil {
-				errors.Print(err)
-			}
-		}()
-
-		var accV interface{}
-
-		for {
-			v, closed, err := inQ.Dequeue()
-			switch {
-			case closed:
-				err = outQ.Enqueue(accV)
-				if err != nil {
-					eerr := errQ.Enqueue(errors.Wrap(err))
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					return
+				case err != nil:
+					eerr := outQ.Enqueue(errors.Wrap(err))
 					if eerr != nil {
 						errors.Print(err)
 					}
 				}
 
-				return
-			case err != nil:
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
+				v, err = f(v)
+				if err != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+
+					continue
 				}
-			}
 
-			accV, err = f(accV, v)
-			if err != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-		}
-	}()
-
-	return outQ, errQ, nil
-}
-
-func Filter(inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queue, error) {
-	outQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	return FilterTo(outQ, inQ, f)
-}
-
-func FilterTo(outQ, inQ Queue, f func(v interface{}) (bool, error)) (Queue, Queue, error) {
-	errQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	go func() {
-		defer func() {
-			cerr := outQ.Close()
-			if cerr != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-		}()
-
-		defer func() {
-			cerr := errQ.Close()
-			if cerr != nil {
-				errors.Print(err)
-			}
-		}()
-
-		for {
-			v, closed, err := inQ.Dequeue()
-			switch {
-			case closed:
-				return
-			case err != nil:
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			enqueue, err := f(v)
-			if err != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			if enqueue {
 				err = outQ.Enqueue(v)
 				if err != nil {
-					eerr := errQ.Enqueue(errors.Wrap(err))
+					eerr := outQ.Enqueue(errors.Wrap(err))
 					if eerr != nil {
 						errors.Print(err)
 					}
-				}
-			}
-		}
-	}()
-
-	return outQ, errQ, nil
-}
-
-func PartitionBy(inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	outQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	return PartitionByTo(outQ, inQ, f)
-}
-
-func PartitionByTo(outQ, inQ Queue, f func(partitionV, v interface{}) (interface{}, error)) (Queue, Queue, error) {
-	errQ, err := NewChanQueue()
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
-
-	go func() {
-		defer func() {
-			cerr := outQ.Close()
-			if cerr != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
 				}
 			}
 		}()
 
-		defer func() {
-			cerr := errQ.Close()
-			if cerr != nil {
-				errors.Print(err)
-			}
-		}()
-
-		var partitionV interface{}
-
-		for {
-			v, closed, err := inQ.Dequeue()
-			switch {
-			case closed:
-				err = outQ.Enqueue(partitionV)
-				if err != nil {
-					eerr := errQ.Enqueue(errors.Wrap(err))
-					if eerr != nil {
-						errors.Print(err)
-					}
-				}
-
-				return
-			case err != nil:
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			newPartitionV, err := f(partitionV, v)
-			if err != nil {
-				eerr := errQ.Enqueue(errors.Wrap(err))
-				if eerr != nil {
-					errors.Print(err)
-				}
-			}
-
-			switch {
-			case partitionV == nil:
-				partitionV = newPartitionV
-			case partitionV != nil && partitionV != newPartitionV:
-				err = outQ.Enqueue(partitionV)
-				if err != nil {
-					eerr := errQ.Enqueue(errors.Wrap(err))
-					if eerr != nil {
-						errors.Print(err)
-					}
-				}
-
-				partitionV = newPartitionV
-			}
-		}
-	}()
-
-	return outQ, errQ, nil
+		return outQ, nil
+	})
 }
 
-func Compose(inQ Queue, fs ...interface{}) (Queue, Queue, error) {
-	var outQ Queue
+type ReduceFunc func(acc, v interface{}) (interface{}, error)
 
-	errQs := make([]Queue, len(fs)/2)
+func Reduce(f ReduceFunc) ComposeFunc {
+	return ReduceTo(&ChanQueue{}, f)
+}
 
-	for i := 0; i < len(fs); i += 2 {
-		paramVs := []reflect.Value{
-			reflect.ValueOf(inQ),
-			reflect.ValueOf(fs[i+1]),
+func ReduceTo(outQ Queue, f ReduceFunc) ComposeFunc {
+	return ComposeFunc(func(inQ Queue) (Queue, error) {
+		if inQ == nil {
+			return nil, errors.New("queues: in queue must be non-null")
 		}
 
-		returnVs := reflect.ValueOf(fs[i]).Call(paramVs)
+		if outQ == nil {
+			return nil, errors.New("queues: out queue must be non-null")
+		}
 
-		outQ = returnVs[0].Interface().(Queue)
+		if f == nil {
+			return nil, errors.New("queues: reduce function must be non-null")
+		}
 
-		errQs[i/2] = returnVs[1].Interface().(Queue)
-
-		err := returnVs[2].Interface()
+		err := outQ.Open()
 		if err != nil {
-			return nil, nil, errors.Wrap(err)
+			return nil, errors.Wrap(err)
 		}
 
-		inQ = outQ
-	}
+		go func() {
+			defer func() {
+				cerr := outQ.Close()
+				if cerr != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+			}()
 
-	errQ, err := Join(errQs...)
-	if err != nil {
-		return nil, nil, errors.Wrap(err)
-	}
+			var acc interface{}
 
-	return outQ, errQ, nil
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					err = outQ.Enqueue(acc)
+					if err != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+
+					return
+				case err != nil:
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				acc, err = f(acc, v)
+				if err != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+			}
+		}()
+
+		return outQ, nil
+	})
+}
+
+type FilterFunc func(v interface{}) (bool, error)
+
+func Filter(f FilterFunc) ComposeFunc {
+	return FilterTo(&ChanQueue{}, f)
+}
+
+func FilterTo(outQ Queue, f FilterFunc) ComposeFunc {
+	return ComposeFunc(func(inQ Queue) (Queue, error) {
+		if inQ == nil {
+			return nil, errors.New("queues: in queue must be non-null")
+		}
+
+		if outQ == nil {
+			return nil, errors.New("queues: out queue must be non-null")
+		}
+
+		if f == nil {
+			return nil, errors.New("queues: filter function must be non-null")
+		}
+
+		err := outQ.Open()
+		if err != nil {
+			return nil, errors.Wrap(err)
+		}
+
+		go func() {
+			defer func() {
+				cerr := outQ.Close()
+				if cerr != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+			}()
+
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					return
+				case err != nil:
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				enqueue, err := f(v)
+				if err != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				if enqueue {
+					err = outQ.Enqueue(v)
+					if err != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+				}
+			}
+		}()
+
+		return outQ, nil
+	})
+}
+
+type PartitionFunc func(partition, v interface{}) (interface{}, error)
+
+func Partition(f PartitionFunc) ComposeFunc {
+	return PartitionTo(&ChanQueue{}, f)
+}
+
+func PartitionTo(outQ Queue, f PartitionFunc) ComposeFunc {
+	return ComposeFunc(func(inQ Queue) (Queue, error) {
+		if inQ == nil {
+			return nil, errors.New("queues: in queue must be non-null")
+		}
+
+		if outQ == nil {
+			return nil, errors.New("queues: out queue must be non-null")
+		}
+
+		if f == nil {
+			return nil, errors.New("queues: partition function must be non-null")
+		}
+
+		err := outQ.Open()
+		if err != nil {
+			return nil, errors.Wrap(err)
+		}
+
+		go func() {
+			defer func() {
+				cerr := outQ.Close()
+				if cerr != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+			}()
+
+			var partition interface{}
+
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					err = outQ.Enqueue(partition)
+					if err != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+
+					return
+				case err != nil:
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				newPartition, err := f(partition, v)
+				if err != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				if partition != nil && partition != newPartition {
+					err = outQ.Enqueue(partition)
+					if err != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+				}
+
+				partition = newPartition
+			}
+		}()
+
+		return outQ, nil
+	})
+}
+
+type ForkJoinFunc func(v interface{}) (map[int]interface{}, error)
+
+func ForkJoin(f ForkJoinFunc, cfs ...ComposeFunc) ComposeFunc {
+	return ForkJoinTo(&ChanQueue{}, f, cfs...)
+}
+
+func ForkJoinTo(outQ Queue, f ForkJoinFunc, cfs ...ComposeFunc) ComposeFunc {
+	return ComposeFunc(func(inQ Queue) (Queue, error) {
+		if inQ == nil {
+			return nil, errors.New("queues: in queue must be non-null")
+		}
+
+		if outQ == nil {
+			return nil, errors.New("queues: out queue must be non-null")
+		}
+
+		if f == nil {
+			return nil, errors.New("queues: fork join function must be non-null")
+		}
+
+		if len(cfs) == 0 {
+			return nil, errors.New("queues: at least one compose function is required")
+		}
+
+		cfInQs := []Queue{}
+
+		cfOutQs := []Queue{}
+
+		for _, cf := range cfs {
+			cfInQ := &ChanQueue{}
+
+			err := cfInQ.Open()
+			if err != nil {
+				return nil, errors.Wrap(err)
+			}
+
+			cfInQs = append(cfInQs, cfInQ)
+
+			cfOutQ, err := cf(cfInQ)
+			if err != nil {
+				return nil, errors.Wrap(err)
+			}
+
+			cfOutQs = append(cfOutQs, cfOutQ)
+		}
+
+		err := outQ.Open()
+		if err != nil {
+			return nil, errors.Wrap(err)
+		}
+
+		go func() {
+			defer func() {
+				for _, cfInQ := range cfInQs {
+					cerr := cfInQ.Close()
+					if cerr != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+				}
+			}()
+
+			for {
+				v, closed, err := inQ.Dequeue()
+				switch {
+				case closed:
+					return
+				case err != nil:
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				cfMapping, err := f(v)
+				if err != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+
+				for i, v := range cfMapping {
+					if len(cfs) <= i {
+						eerr := outQ.Enqueue(errors.New("queues: compose function mapping is invalid"))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+
+					err = cfInQs[i].Enqueue(v)
+					if err != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+				}
+			}
+		}()
+
+		var wg sync.WaitGroup
+
+		wg.Add(len(cfs))
+
+		for _, cfOutQ := range cfOutQs {
+			go func(cfOutQ Queue) {
+				defer wg.Done()
+
+				for {
+					v, closed, err := cfOutQ.Dequeue()
+					switch {
+					case closed:
+						return
+					case err != nil:
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+
+					err = outQ.Enqueue(v)
+					if err != nil {
+						eerr := outQ.Enqueue(errors.Wrap(err))
+						if eerr != nil {
+							errors.Print(err)
+						}
+					}
+				}
+			}(cfOutQ)
+		}
+
+		go func() {
+			defer func() {
+				cerr := outQ.Close()
+				if cerr != nil {
+					eerr := outQ.Enqueue(errors.Wrap(err))
+					if eerr != nil {
+						errors.Print(err)
+					}
+				}
+			}()
+
+			wg.Wait()
+		}()
+
+		return outQ, nil
+	})
 }
